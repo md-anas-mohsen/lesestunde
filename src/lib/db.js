@@ -107,10 +107,10 @@ export async function loadTexts(userId) {
   return data ?? []
 }
 
-export async function saveText(userId, { title, body, level, words_input, words_used }) {
+export async function saveText(userId, { title, body, level, words_input, words_used, word_map = {} }) {
   const { data, error } = await supabase
     .from('texts')
-    .insert({ user_id: userId, title, body, level, words_input, words_used })
+    .insert({ user_id: userId, title, body, level, words_input, words_used, word_map })
     .select()
     .single()
   if (error) throw error

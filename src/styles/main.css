@@ -329,8 +329,33 @@ header {
   margin-top: 14px; font-size: .7rem; color: var(--muted);
   letter-spacing: .05em; text-transform: uppercase;
   border-top: 1px solid var(--aged); padding-top: 10px;
-  display: flex; gap: 12px; flex-wrap: wrap;
+  display: flex; flex-direction: column; gap: 8px;
 }
+.footer-vocab-row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px;
+}
+.footer-vocab-label {
+  white-space: nowrap; margin-right: 2px; flex-shrink: 0;
+}
+.footer-vocab-pills {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px;
+}
+.vocab-pill {
+  background: none;
+  border: none;
+  padding: 1px 0;
+  font-family: 'Source Serif 4', serif;
+  font-size: .7rem;
+  color: var(--muted);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-bottom: 1px dotted var(--muted);
+  transition: color .15s, border-color .15s;
+  line-height: 1.4;
+}
+.vocab-pill:hover { color: var(--accent); border-color: var(--accent); }
+.vocab-pill.active { color: var(--accent); border-bottom-style: solid; background: rgba(192,57,43,.06); }
 
 /* ── Vocab grid ──────────────────────────────────────────────── */
 .vocab-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

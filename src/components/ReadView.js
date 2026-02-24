@@ -6,13 +6,11 @@ const levelColors = { A1:'#2d7a4f',A2:'#4a9e6a',B1:'#b8860b',B2:'#c0721b',C1:'#b
 
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
 
-/**
- * Walk every text node inside `root`, split on `pattern`, and replace
- * matching segments with <span class="vocab-word"> elements.
- * Operating only on Text nodes means the regex never sees HTML attribute
- * strings, so words like "ab" cannot corrupt data-word="..." values.
- */
-function annotateTextNodes(root, pattern) {
+// ── Text node annotator ───────────────────────────────────────
+// Walks only Text nodes so the regex never corrupts HTML attributes.
+// Each match gets a span with class "vocab-word" and a data-dict attribute
+// pointing back to the dictionary-form word for definition lookup.
+function annotateTextNodes(root, pattern, dictFormByMatch) {
   const textNodes = []
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   let node
@@ -33,7 +31,9 @@ function annotateTextNodes(root, pattern) {
       if (pattern.test(part)) {
         const span = document.createElement('span')
         span.className = 'vocab-word'
+        // Store both the surface form and the dictionary form
         span.dataset.word = part
+        span.dataset.dict = dictFormByMatch[part.toLowerCase()] || part
         span.textContent = part
         frag.appendChild(span)
       } else {
@@ -41,13 +41,51 @@ function annotateTextNodes(root, pattern) {
       }
       pattern.lastIndex = 0
     })
-
     textNode.parentNode.replaceChild(frag, textNode)
   })
 }
 
+// ── Build highlight map from word_map ─────────────────────────
+// word_map entries are either:
+//   { surface: "word" }                      — simple match
+//   { stem: "verb stem", prefix: "prefix" }  — split separable verb
+//
+// Returns:
+//   surfaceForms: string[]  — exact strings to highlight in the text
+//   dictFormByMatch: { lowerCaseMatch → dictionaryForm }
+function buildHighlightData(wordMap) {
+  const surfaceForms = []
+  const dictFormByMatch = {}
+
+  for (const [dictForm, entry] of Object.entries(wordMap)) {
+    if (entry.surface) {
+      surfaceForms.push(entry.surface)
+      dictFormByMatch[entry.surface.toLowerCase()] = dictForm
+    } else if (entry.stem && entry.prefix) {
+      // Both stem and prefix get highlighted individually,
+      // but both map back to the same dictionary form.
+      surfaceForms.push(entry.stem, entry.prefix)
+      dictFormByMatch[entry.stem.toLowerCase()]   = dictForm
+      dictFormByMatch[entry.prefix.toLowerCase()] = dictForm
+    }
+  }
+
+  return { surfaceForms, dictFormByMatch }
+}
+
+// ── Fallback: plain verbatim match for old texts without word_map ──
+function buildFallbackHighlightData(wordsUsed, bodyText) {
+  const surfaceForms = wordsUsed.filter(w =>
+    new RegExp(`(^|[^a-zA-ZäöüÄÖÜß])${escapeRegex(w)}($|[^a-zA-ZäöüÄÖÜß])`, 'i').test(bodyText)
+  )
+  const dictFormByMatch = {}
+  surfaceForms.forEach(w => { dictFormByMatch[w.toLowerCase()] = w })
+  return { surfaceForms, dictFormByMatch }
+}
+
+// ── renderReadView ────────────────────────────────────────────
 export function renderReadView(container) {
-  const { texts, currentTextId, currentLevel } = store.get()
+  const { texts, currentTextId } = store.get()
   const current = texts.find(t => t.id === currentTextId)
 
   if (!current) {
@@ -63,15 +101,16 @@ export function renderReadView(container) {
   renderArticle(container, current)
 }
 
+// ── renderArticle ─────────────────────────────────────────────
 export function renderArticle(container, entry) {
   const { words } = store.get()
-  const wordsUsed = entry.words_used || []
+  const wordsUsed  = entry.words_used || []
+  const wordMap    = entry.word_map   || {}
   const paragraphs = entry.body.split(/\n\n+/).map(p => p.trim()).filter(Boolean)
-  const lc = levelColors[entry.level] || 'var(--accent)'
+  const lc   = levelColors[entry.level] || 'var(--accent)'
   const date = new Date(entry.created_at).toLocaleDateString('de-DE')
 
-  // Build the shell with NO user content injected via innerHTML —
-  // text is set via textContent to prevent any XSS or double-encoding.
+  // Build the article shell — no user text injected via innerHTML
   container.innerHTML = `
     <div class="article-card">
       <div class="card-actions">
@@ -82,16 +121,35 @@ export function renderArticle(container, entry) {
       <div class="article-title"></div>
       <div class="article-body"></div>
       <div class="article-footer">
-        <span class="footer-vocab"></span>
+        <div class="footer-vocab-row">
+          <span class="footer-vocab-label">Vocabulary:</span>
+          <span class="footer-vocab-pills" id="footerVocabPills"></span>
+        </div>
         <span>${date}</span>
       </div>
     </div>
   `
 
   container.querySelector('.article-title').textContent = entry.title
-  container.querySelector('.footer-vocab').textContent =
-    'Vocabulary: ' + wordsUsed.join(' · ')
 
+  // ── Vocabulary footer — clickable pills ──────────────────────
+  const pillsEl = container.querySelector('#footerVocabPills')
+  wordsUsed.forEach((w, i) => {
+    const pill = document.createElement('button')
+    pill.className = 'vocab-pill'
+    pill.textContent = w
+    pill.dataset.dict = w   // dictionary form for lookup
+    pill.addEventListener('click', e => {
+      e.stopPropagation()
+      handlePillClick(pill, w)
+    })
+    pillsEl.appendChild(pill)
+    if (i < wordsUsed.length - 1) {
+      pillsEl.appendChild(document.createTextNode(' · '))
+    }
+  })
+
+  // ── Body paragraphs ──────────────────────────────────────────
   const bodyEl = container.querySelector('.article-body')
   paragraphs.forEach(text => {
     const p = document.createElement('p')
@@ -99,24 +157,26 @@ export function renderArticle(container, entry) {
     bodyEl.appendChild(p)
   })
 
-  // Only highlight words that actually appear verbatim in the body text.
-  // Dictionary-form separable verbs (e.g. "anrufen") won't appear in
-  // grammatically correct German — the split form ("rufe...an") does —
-  // so filtering here prevents phantom highlights and annotation errors.
-  const bodyText = entry.body
-  const highlightWords = wordsUsed.filter(w =>
-    new RegExp(`(^|[^a-zA-ZäöüÄÖÜß])${escapeRegex(w)}($|[^a-zA-ZäöüÄÖÜß])`, 'i').test(bodyText)
-  )
+  // ── Highlight vocab words in body ────────────────────────────
+  const hasMap = Object.keys(wordMap).length > 0
+  const { surfaceForms, dictFormByMatch } = hasMap
+    ? buildHighlightData(wordMap)
+    : buildFallbackHighlightData(wordsUsed, entry.body)
 
-  if (highlightWords.length > 0) {
-    const sorted = [...highlightWords].sort((a, b) => b.length - a.length)
-    const pattern = new RegExp('(' + sorted.map(escapeRegex).join('|') + ')', 'gi')
-    annotateTextNodes(bodyEl, pattern)
+  if (surfaceForms.length > 0) {
+    // Sort longest first so "aufgestanden" beats "auf"
+    const sorted = [...new Set(surfaceForms)].sort((a, b) => b.length - a.length)
+    const pattern = new RegExp(
+      '(?<![a-zA-ZäöüÄÖÜß])(' + sorted.map(escapeRegex).join('|') + ')(?![a-zA-ZäöüÄÖÜß])',
+      'gi'
+    )
+    annotateTextNodes(bodyEl, pattern, dictFormByMatch)
   }
 
   container.querySelectorAll('.vocab-word').forEach(el =>
     el.addEventListener('click', handleWordClick))
 
+  // ── Buttons ──────────────────────────────────────────────────
   container.querySelector('#regenBtn').addEventListener('click', () => {
     store.set({ words: words.filter(w => entry.words_input.includes(w.word)) })
     document.dispatchEvent(new CustomEvent('app:generate'))
@@ -128,7 +188,7 @@ export function renderArticle(container, entry) {
 }
 
 // ── Definition popup ──────────────────────────────────────────
-let popup = null
+let popup    = null
 let activeEl = null
 
 function ensurePopup() {
@@ -142,7 +202,10 @@ function ensurePopup() {
 }
 
 document.addEventListener('click', e => {
-  if (!e.target.classList.contains('vocab-word')) hidePopup()
+  const t = e.target
+  if (!t.classList.contains('vocab-word') && !t.classList.contains('vocab-pill')) {
+    hidePopup()
+  }
 })
 
 function hidePopup() {
@@ -150,23 +213,43 @@ function hidePopup() {
   if (activeEl) { activeEl.classList.remove('active'); activeEl = null }
 }
 
+// Clicked a highlighted word in the body
 async function handleWordClick(e) {
   ensurePopup()
-  const el = e.currentTarget
-  const word = el.dataset.word
+  const el   = e.currentTarget
+  const dict = el.dataset.dict || el.dataset.word   // prefer dict form
 
   if (activeEl && activeEl !== el) activeEl.classList.remove('active')
   el.classList.toggle('active')
   activeEl = el.classList.contains('active') ? el : null
   if (!el.classList.contains('active')) { hidePopup(); return }
 
-  popup.querySelector('#defWord').textContent = word
+  showPopupFor(el, dict)
+}
+
+// Clicked a vocab pill in the footer
+async function handlePillClick(pill, dictForm) {
+  ensurePopup()
+
+  if (activeEl === pill) {
+    hidePopup()
+    return
+  }
+  if (activeEl) activeEl.classList.remove('active')
+  pill.classList.add('active')
+  activeEl = pill
+
+  showPopupFor(pill, dictForm)
+}
+
+async function showPopupFor(el, dictForm) {
+  popup.querySelector('#defWord').textContent = dictForm
   popup.querySelector('#defMeaning').textContent = 'Looking up…'
   positionPopup(el)
   popup.style.display = 'block'
 
   try {
-    const def = await getOrFetchDef(word)
+    const def = await getOrFetchDef(dictForm)
     popup.querySelector('#defMeaning').innerHTML = `
       <strong>${def.translation}</strong> <em>(${def.pos})</em>
       <br><span style="font-size:.78rem;opacity:.72;display:block;margin-top:4px">
@@ -184,7 +267,7 @@ async function getOrFetchDef(word) {
   const def = await aiGetDefinition(word, aiConfig)
   store.set(s => ({ defCache: { ...s.defCache, [word]: def } }))
 
-  // Persist to Supabase if word is in our list
+  // Persist to Supabase if this word is in the user's word list
   const wordRow = words.find(w => w.word.toLowerCase() === word.toLowerCase())
   if (wordRow && !wordRow.translation) {
     try { await updateWordDefinition(wordRow.id, def) } catch {}
@@ -193,10 +276,11 @@ async function getOrFetchDef(word) {
 }
 
 function positionPopup(el) {
-  const r = el.getBoundingClientRect()
-  let top = r.bottom + 8, left = r.left
-  if (left + 290 > window.innerWidth) left = window.innerWidth - 292
-  if (top + 160 > window.innerHeight) top = r.top - 165
-  popup.style.top = top + 'px'
+  const r   = el.getBoundingClientRect()
+  let top  = r.bottom + 8
+  let left = r.left
+  if (left + 290 > window.innerWidth)  left = window.innerWidth - 292
+  if (top  + 180 > window.innerHeight) top  = r.top - 185
+  popup.style.top  = top  + 'px'
   popup.style.left = left + 'px'
 }

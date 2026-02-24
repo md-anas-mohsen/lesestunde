@@ -1,6 +1,6 @@
 import { store } from './lib/store.js'
 import { PROVIDERS } from './lib/ai.js'
-import { aiGenerateText } from './lib/ai.js'
+import { aiGenerateText, aiMapWordsToText } from './lib/ai.js'
 import {
   onAuthChange, getCurrentUser,
   loadApiSettings, loadWords, loadTexts,
@@ -185,13 +185,23 @@ document.addEventListener('app:generate', async () => {
   try {
     const wordStrings = words.map(w => w.word)
     const result = await aiGenerateText(wordStrings, currentLevel, aiConfig)
+    const wordsUsed = result.wordsUsed || wordStrings
+
+    // Update loader to show second step
+    const loaderEl = main.querySelector('.loading-text span')
+    if (loaderEl) loaderEl.textContent = 'Mapping vocabulary…'
+
+    // Second AI call: map each dictionary-form word to how it surfaces
+    // in the text (handles separable verbs, inflections, etc.)
+    const wordMap = await aiMapWordsToText(wordsUsed, result.body, aiConfig)
 
     const saved = await saveText(user.id, {
       title:       result.title,
       body:        result.body,
       level:       currentLevel,
       words_input: wordStrings,
-      words_used:  result.wordsUsed || wordStrings,
+      words_used:  wordsUsed,
+      word_map:    wordMap,
     })
 
     store.set(s => ({

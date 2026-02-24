@@ -200,6 +200,62 @@ IMPORTANT: Keep "wordsUsed" short — list ONLY input words that genuinely appea
   return parseJSON(raw)
 }
 
+
+/**
+ * Given a list of dictionary-form German words and a passage body,
+ * ask the AI to find how each word actually surfaces in the text —
+ * including conjugated, inflected, and split separable verb forms.
+ *
+ * Returns a map: { dictionaryForm: "exact surface string in text" }
+ * Words not found in the text are omitted.
+ *
+ * Examples:
+ *   anrufen  → "rufe … an"   (split separable — we store stem+prefix separately)
+ *   aufstehen → "stehe auf"
+ *   Haus     → "Haus" or "Häuser" (plural)
+ *   gehen    → "geht" or "ging"
+ */
+export async function aiMapWordsToText(words, body, config) {
+  const raw = await apiCall(
+    `You are a German linguistics expert. Given this German text and a list of dictionary-form words,
+find exactly how each word appears in the text (conjugated verbs, inflected nouns, split separable verbs, etc.).
+
+For SEPARABLE VERBS in main clauses: the prefix is separated to the end of the clause.
+Return the conjugated STEM as "stem" and the detached PREFIX as "prefix" — both as they appear in the text.
+Example: anrufen used as "Ich rufe meine Mutter an." → stem: "rufe", prefix: "an"
+Example: aufstehen used as "Er steht früh auf." → stem: "steht", prefix: "auf"
+Example: abgeben used as "Sie gibt das Paket ab." → stem: "gibt", prefix: "ab"
+
+For NON-SEPARABLE words (nouns, adjectives, regular verbs, inseparable verbs): return just "surface".
+Example: Haus used as "das Haus" or "die Häuser" → surface: "Haus" (or the form that appears)
+Example: gehen used as "geht" → surface: "geht"
+
+German text:
+"""
+${body}
+"""
+
+Dictionary-form words to find: ${words.join(', ')}
+
+Respond ONLY with a JSON object, no markdown. Each key is a dictionary-form word.
+Value is either:
+  { "surface": "word as it appears" }        ← for regular words
+  { "stem": "verb stem", "prefix": "prefix" } ← for split separable verbs
+
+Only include words that actually appear in the text. Omit words not used.
+
+Example output:
+{"anrufen":{"stem":"rufe","prefix":"an"},"Haus":{"surface":"Haus"},"gehen":{"surface":"geht"}}`,
+    config,
+    600,
+  )
+  try {
+    return parseJSON(raw)
+  } catch {
+    return {}  // graceful degradation — highlighting just won't work for this text
+  }
+}
+
 export async function aiGetDefinition(word, config) {
   const raw = await apiCall(
     `German word: "${word}"
