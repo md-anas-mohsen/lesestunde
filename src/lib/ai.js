@@ -1,0 +1,229 @@
+// ── OpenAI-compatible API client ──────────────────────────────
+// Works with Gemini, OpenAI, OpenRouter, and any local server
+// (Ollama, LM Studio, llama.cpp, vLLM) that speaks the
+// /v1/chat/completions spec.
+
+export const PROVIDERS = {
+  gemini: {
+    label: 'Google Gemini',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    defaultModel: 'gemini-2.0-flash',
+    placeholder: 'AIza…',
+    keyHint: 'Get key at aistudio.google.com',
+    keyRequired: true,
+  },
+  openai: {
+    label: 'OpenAI',
+    baseURL: 'https://api.openai.com/v1',
+    defaultModel: 'gpt-4o-mini',
+    placeholder: 'sk-…',
+    keyHint: 'Get key at platform.openai.com',
+    keyRequired: true,
+  },
+  openrouter: {
+    label: 'OpenRouter',
+    baseURL: 'https://openrouter.ai/api/v1',
+    defaultModel: 'google/gemini-2.0-flash-001',
+    placeholder: 'sk-or-…',
+    keyHint: 'Get key at openrouter.ai',
+    keyRequired: true,
+  },
+  mistral: {
+    label: 'Mistral AI',
+    baseURL: 'https://api.mistral.ai/v1',
+    defaultModel: 'mistral-small-latest',
+    placeholder: 'your-mistral-key…',
+    keyHint: 'Get key at console.mistral.ai',
+    keyRequired: true,
+  },
+  local: {
+    label: 'Local Model',
+    baseURL: 'http://localhost:11434/v1',
+    defaultModel: 'llama3',
+    placeholder: 'ollama  (or leave blank)',
+    keyHint: 'Works with Ollama, LM Studio, llama.cpp, vLLM — key is optional.',
+    keyRequired: false,
+    localPresets: [
+      { label: 'Ollama',    url: 'http://localhost:11434/v1', model: 'llama3' },
+      { label: 'LM Studio', url: 'http://localhost:1234/v1',  model: 'local-model' },
+      { label: 'llama.cpp', url: 'http://localhost:8080/v1',  model: 'gpt-4' },
+      { label: 'vLLM',      url: 'http://localhost:8000/v1',  model: 'default' },
+    ],
+  },
+}
+
+/**
+ * Call /v1/chat/completions on the configured provider.
+ * @param {string} prompt
+ * @param {{ provider: string, baseURL: string, model: string, apiKey?: string }} config
+ * @param {number} maxTokens
+ */
+export async function apiCall(prompt, config, maxTokens = 800) {
+  const { provider, baseURL, model, apiKey } = config
+  const prov = PROVIDERS[provider]
+
+  if (prov?.keyRequired && !apiKey) {
+    throw new Error('No API key set. Open ⚙ Settings to add yours.')
+  }
+
+  const headers = { 'Content-Type': 'application/json' }
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+  const res = await fetch(`${baseURL}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+
+  const data = await res.json()
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error))
+  return data.choices[0].message.content
+}
+
+export function parseJSON(raw) {
+  const cleaned = raw.replace(/```json|```/g, '').trim()
+
+  // Happy path
+  try { return JSON.parse(cleaned) } catch (_) {}
+
+  // Recovery: model hit max_tokens and truncated the JSON mid-stream.
+  // Extract whatever fully-formed fields we can find via regex.
+  const start = cleaned.indexOf('{')
+  if (start === -1) {
+    // Might be a plain array (aiExtractWords response)
+    const arrayMatch = cleaned.match(/\[([\s\S]*?)(?:\]|$)/)
+    if (arrayMatch) {
+      const items = [...arrayMatch[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+      if (items.length > 0) return items.map(m => m[1])
+    }
+    throw new Error('No JSON found in model response.')
+  }
+
+  const partial = cleaned.slice(start)
+  const recover = {}
+
+  const titleMatch = partial.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  if (titleMatch) recover.title = titleMatch[1]
+
+  const bodyMatch = partial.match(/"body"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  if (bodyMatch) recover.body = bodyMatch[1].replace(/\\n/g, '\n')
+
+  const wordsUsedSection = partial.match(/"wordsUsed"\s*:\s*\[([\s\S]*?)(?:\]|$)/)
+  if (wordsUsedSection) {
+    const items = [...wordsUsedSection[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+    recover.wordsUsed = items.map(m => m[1])
+  }
+
+  if (recover.title && recover.body) return recover
+
+  throw new Error(
+    'Model response was truncated and could not be recovered. ' +
+    'Try fewer words, or use a model with a larger output context.'
+  )
+}
+
+// ── Domain-level AI functions ─────────────────────────────────
+
+export async function aiExtractWords(text, config) {
+  const raw = await apiCall(
+    `Extract all unique German words (nouns, verbs, adjectives, adverbs) from this text.
+Return base/dictionary forms (infinitive for verbs, nominative singular for nouns).
+No duplicates, no articles, no pronouns, no conjunctions.
+Respond ONLY with a JSON array of strings — no other text.
+Text: """${text.slice(0, 3000)}"""`,
+    config,
+    900,
+  )
+  return parseJSON(raw)
+}
+
+const LEVEL_DESC = {
+  A1: 'absolute beginner A1: very short simple sentences, basic present tense, everyday vocabulary only',
+  A2: 'elementary A2: simple connected sentences, basic past tense (Perfekt), familiar everyday topics',
+  B1: 'intermediate B1: clear connected text, varied tenses, slightly complex sentence structures',
+  B2: 'upper-intermediate B2: complex text, nuanced vocabulary, idiomatic expressions',
+  C1: 'advanced C1: fluent sophisticated text, rich vocabulary, varied structures, cultural references',
+  C2: 'proficient C2: literary quality, highly idiomatic, stylistically elegant prose',
+}
+
+export async function aiGenerateText(words, level, config) {
+  // Cap word list to avoid inflating the wordsUsed array and blowing the token budget.
+  const MAX_WORDS = 30
+  const wordList = words.length > MAX_WORDS ? words.slice(0, MAX_WORDS) : words
+
+  const raw = await apiCall(
+    `You are a German language teacher writing a reading passage for a learner.
+Write a passage at ${LEVEL_DESC[level]} level using as many of these words as naturally fit:
+${wordList.join(', ')}
+
+CRITICAL GERMAN GRAMMAR RULES — you must follow these exactly:
+
+1. SEPARABLE VERBS (trennbare Verben): When a separable verb is used in a main clause,
+   the prefix is ALWAYS split off and placed at the END of the clause.
+   The stem is conjugated normally near the subject.
+   CORRECT:   "Ich rufe meine Mutter an."   (anrufen)
+   CORRECT:   "Er macht das Licht an."       (anmachen)
+   CORRECT:   "Wir fangen um 8 Uhr an."     (anfangen)
+   CORRECT:   "Ich hole das Paket ab."       (abholen)
+   WRONG:     "Ich anrufe meine Mutter."
+   WRONG:     "Ich anmache das Licht."
+   This rule applies to ALL separable verbs, including: anrufen, anmachen, anfangen,
+   abholen, abgeben, ankommen, anbieten, ankreuzen, anklicken, anmelden, aufstehen,
+   aussteigen, einsteigen, mitkommen, zurückkommen, and any other verb with a
+   separable prefix (an-, ab-, auf-, aus-, ein-, mit-, zurück-, vor-, nach-, etc.).
+
+2. VERB CONJUGATION: Always conjugate verbs to match the subject.
+   Do NOT use infinitive forms in finite clauses.
+   CORRECT: "Ich komme an." / "Er kommt an." / "Wir kommen an."
+   WRONG:   "Ich ankommen." / "Ich anrufen."
+
+3. MODAL VERBS: With modals, the infinitive stays whole at the end.
+   CORRECT: "Ich muss um 8 Uhr aufstehen." (NOT "Ich muss aufstehen auf.")
+
+Passage requirements:
+- 2-3 paragraphs, 150-200 words total
+- Written entirely in German
+- Coherent story or article (not a list of sentences)
+- Give it an evocative German title
+
+Respond ONLY with this JSON object, no markdown fences, no extra text:
+{"title":"...","body":"paragraph one\\n\\nparagraph two","wordsUsed":["only","words","actually","in","the","text"]}
+
+IMPORTANT: Keep "wordsUsed" short — list ONLY input words that genuinely appear in the body.`,
+    config,
+    2000,
+  )
+  return parseJSON(raw)
+}
+
+export async function aiGetDefinition(word, config) {
+  const raw = await apiCall(
+    `German word: "${word}"
+JSON only (no markdown): {"translation":"short English meaning","pos":"noun/verb/adj/adv/etc","example_de":"short German sentence","example_en":"English translation of sentence"}`,
+    config,
+    350,
+  )
+  return parseJSON(raw)
+}
+
+export async function aiTestConnection(config) {
+  const prov = PROVIDERS[config.provider]
+  const isLocal = config.provider === 'local'
+  if (prov?.keyRequired && !config.apiKey) {
+    throw new Error('No API key provided.')
+  }
+  try {
+    const reply = await apiCall('Reply with just the word: ok', config, 12)
+    return reply.trim()
+  } catch (e) {
+    let msg = e.message
+    if (isLocal && (msg.includes('Failed to fetch') || msg.includes('NetworkError'))) {
+      msg += ' — Is your local server running? Check CORS settings.'
+    }
+    throw new Error(msg)
+  }
+}
