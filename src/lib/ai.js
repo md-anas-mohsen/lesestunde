@@ -150,15 +150,80 @@ const LEVEL_DESC = {
   C2: 'proficient C2: literary quality, highly idiomatic, stylistically elegant prose',
 }
 
+// Pools for randomising passage variety
+const FORMATS = [
+  'a short news report',
+  'a diary entry written by a fictional character (NOT named Anna or Max)',
+  'a letter or email between two people',
+  'a conversation or dialogue',
+  'a short story with an unexpected twist',
+  'a travel blog excerpt',
+  'a magazine article',
+  'a recipe with a short story behind it',
+  'a social media post with a short narrative',
+  'a short historical anecdote',
+  'a radio broadcast transcript',
+  'an advertisement with a narrative',
+  'a fairy tale opening',
+  'a scientific explanation with a narrative framing',
+  'an interview excerpt',
+]
+
+const SETTINGS = [
+  'a train station in Germany',
+  'a small town in Bavaria',
+  'a bustling Hamburg harbour',
+  'a Berlin street market',
+  'a mountain hut in the Alps',
+  'a university campus',
+  'a bakery in Vienna',
+  'a forest in autumn',
+  'a hospital waiting room',
+  'a holiday in a foreign country',
+  'a rainy Sunday afternoon at home',
+  'a summer festival',
+  'a late-night supermarket',
+  'a historic castle',
+  'a modern office',
+  'a school classroom',
+  'a riverside café',
+  'a crowded subway',
+  'a veterinary clinic',
+  'a sports stadium',
+]
+
+const PERSPECTIVES = [
+  'third person (er/sie/es)',
+  'first person plural (wir)',
+  'second person (du or Sie)',
+  'third person plural (sie)',
+  // first person singular only sometimes so it isn't always "Ich..."
+  'first person singular (ich)',
+  'first person singular (ich)',
+]
+
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)] }
+
 export async function aiGenerateText(words, level, config) {
   // Cap word list to avoid inflating the wordsUsed array and blowing the token budget.
   const MAX_WORDS = 30
   const wordList = words.length > MAX_WORDS ? words.slice(0, MAX_WORDS) : words
 
+  const format      = pick(FORMATS)
+  const setting     = pick(SETTINGS)
+  const perspective = pick(PERSPECTIVES)
+
   const raw = await apiCall(
     `You are a German language teacher writing a reading passage for a learner.
 Write a passage at ${LEVEL_DESC[level]} level using as many of these words as naturally fit:
 ${wordList.join(', ')}
+
+FORMAT: ${format}
+SETTING: ${setting}
+NARRATIVE PERSPECTIVE: ${perspective}
+
+Do NOT write a generic "day in the life of Anna/Max" story. The format, setting, and perspective above
+are mandatory — the passage must clearly reflect all three. Be creative and specific.
 
 CRITICAL GERMAN GRAMMAR RULES — you must follow these exactly:
 
@@ -187,8 +252,8 @@ CRITICAL GERMAN GRAMMAR RULES — you must follow these exactly:
 Passage requirements:
 - 2-3 paragraphs, 150-200 words total
 - Written entirely in German
-- Coherent story or article (not a list of sentences)
-- Give it an evocative German title
+- Coherent and engaging — not a list of sentences
+- Give it a specific, evocative German title that reflects the format and setting
 
 Respond ONLY with this JSON object, no markdown fences, no extra text:
 {"title":"...","body":"paragraph one\\n\\nparagraph two","wordsUsed":["only","words","actually","in","the","text"]}
