@@ -116,6 +116,7 @@ export function renderArticle(container, entry) {
       <div class="card-actions">
         <button class="btn-small" id="regenBtn">↺ Regenerate</button>
         <button class="btn-small" id="newBtn">+ New</button>
+        <button class="btn-small btn-exercise" id="exerciseBtn">✦ Exercises</button>
         <span class="level-badge" style="color:${lc};border-color:${lc}">${entry.level}</span>
       </div>
       <div class="article-title"></div>
@@ -184,6 +185,10 @@ export function renderArticle(container, entry) {
 
   container.querySelector('#newBtn').addEventListener('click', () => {
     store.set({ currentTextId: null })
+  })
+
+  container.querySelector('#exerciseBtn').addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('app:exercise', { detail: entry.id }))
   })
 }
 

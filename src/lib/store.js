@@ -46,4 +46,16 @@ export const store = createStore({
   inputMode: 'bulk',   // 'bulk' | 'text'
   settingsOpen: false,
   defCache: {},        // word -> definition (in-memory, also stored in words table)
+
+  // Exercises
+  exercises: {},       // { textId: exerciseRow }
+  results: [],         // exercise_results rows, newest first
+
+  // Generation controls
+  emphasizedWords: new Set(),  // Set of word IDs to prioritise in generation
+  generationOptions: {
+    format: '',       // '' = random
+    setting: '',      // '' = random
+    perspective: '',  // '' = random
+  },
 })

@@ -4,13 +4,15 @@ import { aiGenerateText, aiMapWordsToText } from './lib/ai.js'
 import {
   onAuthChange, getCurrentUser,
   loadApiSettings, loadWords, loadTexts,
-  saveText, deleteText as dbDeleteText,
+  saveText, deleteText as dbDeleteText, loadResults,
 } from './lib/db.js'
 import { renderAuthScreen } from './components/AuthScreen.js'
 import { renderSettingsModal } from './components/SettingsModal.js'
 import { renderSidebar } from './components/Sidebar.js'
 import { renderReadView, renderArticle } from './components/ReadView.js'
 import { renderVocabView } from './components/VocabView.js'
+import { renderExerciseView } from './components/ExerciseView.js'
+import { renderProgressView } from './components/ProgressView.js'
 
 // ── Root DOM nodes ─────────────────────────────────────────────
 const root        = document.getElementById('app')
@@ -56,9 +58,12 @@ async function loadUserData(user) {
     // Load texts
     store.set({ textsLoading: true })
     const texts = await loadTexts(user.id)
-    // Show most recent text by default
     const currentTextId = texts.length > 0 ? texts[0].id : null
     store.set({ texts, textsLoading: false, currentTextId })
+
+    // Load results (for progress view)
+    const results = await loadResults(user.id)
+    store.set({ results })
   } catch (e) {
     console.error('Failed to load user data:', e)
     store.set({ wordsLoading: false, textsLoading: false })
@@ -106,6 +111,7 @@ function renderApp() {
           <div class="nav-tabs">
             <button class="nav-tab ${currentView === 'read' ? 'active' : ''}" data-view="read">📖 Read</button>
             <button class="nav-tab ${currentView === 'vocab' ? 'active' : ''}" data-view="vocab">🗂 Vocab</button>
+            <button class="nav-tab ${currentView === 'progress' ? 'active' : ''}" data-view="progress">📊 Progress</button>
           </div>
           <button class="settings-btn ${aiConfig.apiKey || aiConfig.provider === 'local' ? 'has-key' : ''}" id="openSettings">
             ⚙ ${aiConfig.provider === 'local' ? 'Local ✓' : aiConfig.apiKey ? 'API Key ✓' : 'API Key'}
@@ -131,11 +137,17 @@ function renderApp() {
 }
 
 function renderMainContent() {
-  const { currentView } = store.get()
+  const { currentView, currentTextId, texts } = store.get()
   const main = document.getElementById('mainContent')
   if (!main) return
   if (currentView === 'read') renderReadView(main)
-  else renderVocabView(main)
+  else if (currentView === 'vocab') renderVocabView(main)
+  else if (currentView === 'exercise') {
+    const entry = texts.find(t => t.id === currentTextId)
+    if (entry) renderExerciseView(main, entry)
+    else renderReadView(main)
+  }
+  else if (currentView === 'progress') renderProgressView(main)
 }
 
 function bindHeaderEvents() {
@@ -183,8 +195,15 @@ document.addEventListener('app:generate', async () => {
     </div>`
 
   try {
+    const { emphasizedWords, generationOptions } = store.get()
     const wordStrings = words.map(w => w.word)
-    const result = await aiGenerateText(wordStrings, currentLevel, aiConfig)
+    const emphasizedStrings = words
+      .filter(w => emphasizedWords.has(w.id))
+      .map(w => w.word)
+    const result = await aiGenerateText(wordStrings, currentLevel, aiConfig, {
+      emphasizedWords: emphasizedStrings,
+      options: generationOptions,
+    })
     const wordsUsed = result.wordsUsed || wordStrings
 
     // Update loader to show second step
@@ -214,6 +233,14 @@ document.addEventListener('app:generate', async () => {
   } catch (e) {
     main.innerHTML = `<div class="loading-text" style="color:var(--accent)">⚠ ${e.message}</div>`
   }
+})
+
+document.addEventListener('app:exercise', e => {
+  const textId = e.detail
+  const { texts } = store.get()
+  const entry = texts.find(t => t.id === textId)
+  if (!entry) return
+  store.set({ currentTextId: textId, currentView: 'exercise' })
 })
 
 document.addEventListener('app:showText', e => {
@@ -267,6 +294,12 @@ store.subscribe(state => {
     || state.currentView  !== prev.currentView
     || state.aiConfig     !== prev.aiConfig) {
     renderApp(); return
+  }
+
+  // Results changed (exercise completed) → re-render progress if visible
+  if (state.results !== prev.results) {
+    const main = document.getElementById('mainContent')
+    if (main && state.currentView === 'progress') renderProgressView(main)
   }
 
   // Words or texts changed → re-render sidebar and possibly main

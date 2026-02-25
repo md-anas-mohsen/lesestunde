@@ -1,11 +1,10 @@
 import { store } from '../lib/store.js'
 import { addWords, clearAllWords, deleteWord, deleteAllTexts } from '../lib/db.js'
-import { aiExtractWords } from '../lib/ai.js'
+import { aiExtractWords, FORMATS, SETTINGS, PERSPECTIVES } from '../lib/ai.js'
 
 export function renderSidebar(container) {
   const s = store.get()
-  const words = s.words
-  const { inputMode } = s
+  const { words, inputMode, emphasizedWords, generationOptions } = s
 
   container.innerHTML = `
     <div class="sidebar-section-title">
@@ -33,21 +32,66 @@ export function renderSidebar(container) {
     </button>
 
     <div>
-      <div class="sidebar-section-title" style="margin-bottom:8px">
+      <div class="sidebar-section-title" style="margin-bottom:4px">
         Selected Words
+        ${emphasizedWords.size > 0 ? `<span class="emphasis-hint">${emphasizedWords.size} pinned ★</span>` : ''}
       </div>
+      <p class="chip-hint">Tap a word to pin it — pinned words are prioritised in generation.</p>
       <div class="word-chips-wrap" id="wordChips">
-        ${words.map(w => `
-          <div class="word-chip" data-id="${w.id}">
-            <span>${w.word}</span>
-            <button class="remove" data-id="${w.id}" title="Remove">×</button>
-          </div>`).join('')}
+        ${words.map(w => {
+          const pinned = emphasizedWords.has(w.id)
+          return `
+            <div class="word-chip ${pinned ? 'pinned' : ''}" data-id="${w.id}" title="${pinned ? 'Click to unpin' : 'Click to pin (prioritise in generation)'}">
+              ${pinned ? '<span class="pin-star">★</span>' : ''}
+              <span class="chip-label">${w.word}</span>
+              <button class="remove" data-id="${w.id}" title="Remove">×</button>
+            </div>`
+        }).join('')}
       </div>
       <div class="chip-row">
         <button class="chip-action-btn" id="clearWordsBtn">Clear all</button>
-        <button class="chip-action-btn" id="viewVocabBtn">View cards →</button>
+        <button class="chip-action-btn" id="unpinAllBtn" ${emphasizedWords.size === 0 ? 'disabled' : ''}>Unpin all</button>
+        <button class="chip-action-btn" id="viewVocabBtn">Cards →</button>
       </div>
     </div>
+
+    <!-- Generation Options -->
+    <details class="gen-options" ${generationOptions.format || generationOptions.setting || generationOptions.perspective ? 'open' : ''}>
+      <summary class="gen-options-summary">
+        ✦ Generation Options
+        ${generationOptions.format || generationOptions.setting || generationOptions.perspective
+          ? '<span class="options-active-badge">custom</span>'
+          : '<span class="options-random-badge">random</span>'}
+      </summary>
+      <div class="gen-options-body">
+
+        <div class="gen-option-group">
+          <label class="gen-option-label">Format</label>
+          <select class="gen-select" id="optFormat">
+            <option value="">🎲 Random</option>
+            ${FORMATS.map(f => `<option value="${f}" ${generationOptions.format === f ? 'selected' : ''}>${f}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="gen-option-group">
+          <label class="gen-option-label">Setting</label>
+          <select class="gen-select" id="optSetting">
+            <option value="">🎲 Random</option>
+            ${SETTINGS.map(s => `<option value="${s}" ${generationOptions.setting === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="gen-option-group">
+          <label class="gen-option-label">Perspective</label>
+          <select class="gen-select" id="optPerspective">
+            <option value="">🎲 Random</option>
+            ${[...new Set(PERSPECTIVES)].map(p => `<option value="${p}" ${generationOptions.perspective === p ? 'selected' : ''}>${p}</option>`).join('')}
+          </select>
+        </div>
+
+        <button class="chip-action-btn" id="resetOptionsBtn" style="margin-top:4px">Reset to random</button>
+      </div>
+    </details>
 
     <button class="btn-generate" id="generateBtn" ${words.length === 0 ? 'disabled' : ''}>
       ✦ Generate Reading Text
@@ -96,16 +140,65 @@ function bindSidebarEvents(container) {
     })
   })
 
-  // Remove single word chip
+  // Word chip click — toggle emphasis (but not when clicking the × remove button)
+  container.querySelector('#wordChips')?.addEventListener('click', e => {
+    if (e.target.classList.contains('remove')) return
+    const chip = e.target.closest('.word-chip')
+    if (!chip) return
+    const id = chip.dataset.id
+    store.set(s => {
+      const next = new Set(s.emphasizedWords)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return { emphasizedWords: next }
+    })
+  })
+
+  // Remove single word chip ×
   container.querySelectorAll('.remove').forEach(btn => {
     btn.addEventListener('click', async e => {
       e.stopPropagation()
       const id = btn.dataset.id
       try {
         await deleteWord(id)
-        store.set(s => ({ words: s.words.filter(w => w.id !== id) }))
+        store.set(s => {
+          const next = new Set(s.emphasizedWords)
+          next.delete(id)
+          return {
+            words: s.words.filter(w => w.id !== id),
+            emphasizedWords: next,
+          }
+        })
       } catch (err) { console.error(err) }
     })
+  })
+
+  // Unpin all
+  container.querySelector('#unpinAllBtn')?.addEventListener('click', () => {
+    store.set({ emphasizedWords: new Set() })
+  })
+
+  // Generation option selects
+  const syncOptions = () => {
+    store.set(s => ({
+      generationOptions: {
+        ...s.generationOptions,
+        format:      container.querySelector('#optFormat')?.value      ?? '',
+        setting:     container.querySelector('#optSetting')?.value     ?? '',
+        perspective: container.querySelector('#optPerspective')?.value ?? '',
+      }
+    }))
+  }
+
+  container.querySelector('#optFormat')?.addEventListener('change', syncOptions)
+  container.querySelector('#optSetting')?.addEventListener('change', syncOptions)
+  container.querySelector('#optPerspective')?.addEventListener('change', syncOptions)
+
+  container.querySelector('#resetOptionsBtn')?.addEventListener('click', () => {
+    store.set({ generationOptions: { format: '', setting: '', perspective: '' } })
+    container.querySelector('#optFormat').value = ''
+    container.querySelector('#optSetting').value = ''
+    container.querySelector('#optPerspective').value = ''
   })
 
   // Clear all saved texts
@@ -126,7 +219,7 @@ function bindSidebarEvents(container) {
     if (!confirm(`Remove all ${words.length} words?`)) return
     try {
       await clearAllWords(user.id)
-      store.set({ words: [] })
+      store.set({ words: [], emphasizedWords: new Set() })
     } catch (err) { console.error(err) }
   })
 
@@ -177,7 +270,7 @@ function bindSidebarEvents(container) {
     }
   })
 
-  // Generate text — dispatch custom event for main app to handle
+  // Generate
   container.querySelector('#generateBtn')?.addEventListener('click', () => {
     document.dispatchEvent(new CustomEvent('app:generate'))
   })
@@ -186,7 +279,6 @@ function bindSidebarEvents(container) {
   container.querySelector('#savedList')?.addEventListener('click', e => {
     const delBtn = e.target.closest('[data-delete-id]')
     const item   = e.target.closest('[data-text-id]')
-
     if (delBtn) {
       document.dispatchEvent(new CustomEvent('app:deleteText', { detail: delBtn.dataset.deleteId }))
       return

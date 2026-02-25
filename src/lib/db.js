@@ -126,3 +126,47 @@ export async function deleteAllTexts(userId) {
   const { error } = await supabase.from('texts').delete().eq('user_id', userId)
   if (error) throw error
 }
+
+// ── Exercises ─────────────────────────────────────────────────
+
+export async function loadExercise(textId, userId) {
+  const { data, error } = await supabase
+    .from('exercises')
+    .select('*')
+    .eq('text_id', textId)
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return data
+}
+
+export async function saveExercise(userId, textId, questions) {
+  const { data, error } = await supabase
+    .from('exercises')
+    .upsert({ user_id: userId, text_id: textId, questions }, { onConflict: 'text_id,user_id' })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function saveExerciseResult(userId, { exerciseId, textId, level, answers, grading, score }) {
+  const { data, error } = await supabase
+    .from('exercise_results')
+    .insert({ user_id: userId, exercise_id: exerciseId, text_id: textId, level, answers, grading, score })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function loadResults(userId) {
+  const { data, error } = await supabase
+    .from('exercise_results')
+    .select('*, texts(title, level)')
+    .eq('user_id', userId)
+    .order('completed_at', { ascending: false })
+    .limit(100)
+  if (error) throw error
+  return data ?? []
+}

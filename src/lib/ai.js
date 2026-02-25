@@ -204,19 +204,33 @@ const PERSPECTIVES = [
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)] }
 
-export async function aiGenerateText(words, level, config) {
-  // Cap word list to avoid inflating the wordsUsed array and blowing the token budget.
-  const MAX_WORDS = 30
-  const wordList = words.length > MAX_WORDS ? words.slice(0, MAX_WORDS) : words
+// Exported so UI can populate dropdowns
+export { FORMATS, SETTINGS, PERSPECTIVES }
 
-  const format      = pick(FORMATS)
-  const setting     = pick(SETTINGS)
-  const perspective = pick(PERSPECTIVES)
+export async function aiGenerateText(words, level, config, { emphasizedWords = [], options = {} } = {}) {
+  const MAX_WORDS = 30
+
+  // Emphasized words always go first, then fill remaining slots from the rest
+  const emphasized = words.filter(w => emphasizedWords.includes(w))
+  const rest = words.filter(w => !emphasizedWords.includes(w))
+  const wordList = [
+    ...emphasized,
+    ...rest,
+  ].slice(0, MAX_WORDS)
+
+  const format      = options.format      || pick(FORMATS)
+  const setting     = options.setting     || pick(SETTINGS)
+  const perspective = options.perspective || pick(PERSPECTIVES)
+
+  const emphasizedSection = emphasized.length > 0
+    ? `PRIORITY WORDS — these must appear in the text: ${emphasized.join(', ')}`
+    : ''
 
   const raw = await apiCall(
     `You are a German language teacher writing a reading passage for a learner.
 Write a passage at ${LEVEL_DESC[level]} level using as many of these words as naturally fit:
 ${wordList.join(', ')}
+${emphasizedSection}
 
 FORMAT: ${format}
 SETTING: ${setting}
@@ -347,4 +361,89 @@ export async function aiTestConnection(config) {
     }
     throw new Error(msg)
   }
+}
+
+// ── Exercise generation ───────────────────────────────────────
+
+/**
+ * Generate a set of exercises for a German reading passage.
+ * Returns an array of question objects.
+ */
+export async function aiGenerateExercises(title, body, level, wordsUsed, config) {
+  const raw = await apiCall(
+    `You are a German language teacher. Create exercises for this ${level}-level German reading passage.
+
+Title: ${title}
+Text:
+"""
+${body}
+"""
+Vocabulary used: ${wordsUsed.join(', ')}
+
+Generate exactly 6 exercises — a mix of these types:
+- "mc": multiple-choice comprehension question about the text (4 options, one correct)
+- "fill": fill-in-the-blank using one of the vocabulary words (give the sentence with ___ for the blank)
+- "translate": translate a short sentence from the passage into English
+
+Rules:
+- All prompts and options must be appropriate for ${level} level
+- For "mc": options must be plausible but only one correct
+- For "fill": the blank must be filled by one of the vocabulary words (give "answer" in base/dictionary form)
+- For "translate": choose a sentence that uses key vocabulary
+
+Respond ONLY with this JSON array, no markdown:
+[
+  {"id":"q1","type":"mc","prompt":"question?","options":["A","B","C","D"],"answer":"A"},
+  {"id":"q2","type":"fill","prompt":"Er ___ das Licht an.","answer":"anmachen","hint":"separable verb"},
+  {"id":"q3","type":"translate","prompt":"Das Haus ist sehr groß.","answer":"The house is very big."}
+]`,
+    config,
+    1200,
+  )
+  return parseJSON(raw)
+}
+
+/**
+ * Grade a completed exercise set. Returns grading object and overall score.
+ */
+export async function aiGradeExercises(questions, answers, body, config) {
+  const pairs = questions.map(q => ({
+    id: q.id,
+    type: q.type,
+    prompt: q.prompt,
+    correctAnswer: q.answer,
+    userAnswer: answers[q.id] || '',
+    options: q.options || null,
+  }))
+
+  const raw = await apiCall(
+    `You are a German language teacher grading student exercises.
+
+Reading passage for context:
+"""
+${body.slice(0, 800)}
+"""
+
+Grade each answer. For "mc" and "fill" types, marking is strict (correct/incorrect).
+For "translate" type, be generous — accept answers that convey the correct meaning even if not word-for-word.
+
+Questions and answers:
+${JSON.stringify(pairs, null, 2)}
+
+Respond ONLY with this JSON object, no markdown:
+{
+  "grading": {
+    "q1": {"correct": true, "score": 1, "feedback": "short encouraging feedback"},
+    "q2": {"correct": false, "score": 0, "feedback": "hint about correct answer"}
+  },
+  "totalScore": 85,
+  "overallFeedback": "One or two sentences of overall encouraging feedback in English."
+}
+
+- score per question: 1 = fully correct, 0.5 = partially correct (translations only), 0 = incorrect
+- totalScore: 0-100, percentage of points earned`,
+    config,
+    800,
+  )
+  return parseJSON(raw)
 }
